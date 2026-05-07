@@ -45,47 +45,59 @@ if 'scan_results' not in st.session_state:
 # --- 2. 核心辅助函数 ---
 
 def get_chrome_path():
-    """自动寻找系统中的 Chrome 浏览器路径"""
-    paths = [
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
-        "/usr/bin/google-chrome",
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    ]
-    for path in paths:
-        if os.path.exists(path):
-            return path
-    return None
+    """兼容性路径获取：云端返回 None，让 Playwright 自动处理"""
+    if os.name == 'nt':  # 只有在 Windows 本地才去搜寻路径
+        paths = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe")
+        ]
+        for path in paths:
+            if os.path.exists(path): return path
+    return None # Linux 云端返回 None
 
 def fetch_web_content_with_links(url):
-    """增强版抓取：注入反爬伪装并提取链接"""
-    chrome_path = get_chrome_path()
-    if not chrome_path:
-        return "抓取失败: 未在系统中找到 Chrome 浏览器。"
-    
+    """增强版抓取：自动适配云端环境"""
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                executable_path=chrome_path, 
-                headless=True, 
-                args=['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-infobars']
-            )
+            # 配置启动参数
+            launch_kwargs = {
+                "headless": True,
+                "args": [
+                    '--disable-blink-features=AutomationControlled',
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox', # 云端必须
+                    '--disable-infobars'
+                ]
+            }
+            
+            # 只有在 Windows 环境下手动指定 executable_path
+            chrome_path = get_chrome_path()
+            if chrome_path and os.name == 'nt':
+                launch_kwargs["executable_path"] = chrome_path
+
+            # 启动浏览器
+            browser = p.chromium.launch(**launch_kwargs)
+            
             context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                viewport={'width': 1280, 'height': 800}
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
             )
+            
             page = context.new_page()
+            # 抹除自动化特征
             page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
+            # 访问页面
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            except Exception:
+            except:
                 page.goto(url, wait_until="load", timeout=30000)
             
             time.sleep(3)
-            content_with_links = page.evaluate("""() => {
-                const junk = ['script', 'style', 'nav', 'footer', 'header', '.side-bar', 'iframe'];
+            
+            # 提取内容
+            content = page.evaluate("""() => {
+                const junk = ['script', 'style', 'nav', 'footer', 'header', 'iframe'];
                 junk.forEach(tag => document.querySelectorAll(tag).forEach(el => el.remove()));
                 document.querySelectorAll('a').forEach(a => {
                     if(a.href && a.href.startsWith('http')) {
@@ -96,10 +108,12 @@ def fetch_web_content_with_links(url):
                 });
                 return document.body.innerText;
             }""")
+            
             browser.close()
-            return content_with_links[:10000] 
+            return content[:10000]
+            
     except Exception as e:
-        return f"抓取失败: {str(e)[:100]}"
+        return f"抓取失败: {str(e)[:150]}"
 
 def analyze_with_minimax(site_name, content, date_limit):
     """MiniMax 分析核心函数"""
