@@ -2,4 +2,3 @@ streamlit
 pandas
 requests
 playwright
-playwright-pip-install
